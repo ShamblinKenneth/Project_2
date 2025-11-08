@@ -5,15 +5,13 @@
 #include <unordered_map>
 #include <queue>
 #include <algorithm>
-#include <cmath>
-#include <cstdlib>   // for system()
 #include <filesystem>
 
 using namespace std;
 namespace fs = std::filesystem;
 
 // ------------------------------------------------------------
-// Video record structure
+// Structure to hold video data
 // ------------------------------------------------------------
 struct Video {
     string title;
@@ -24,7 +22,7 @@ struct Video {
 };
 
 // ------------------------------------------------------------
-// Utility: split string
+// Utility: split string by a delimiter
 // ------------------------------------------------------------
 vector<string> split(const string &s, char delim) {
     vector<string> elems;
@@ -38,9 +36,31 @@ vector<string> split(const string &s, char delim) {
 }
 
 // ------------------------------------------------------------
-// Load dataset from CSV
+// Parse a CSV line safely (handles quoted commas)
 // ------------------------------------------------------------
-vector<Video> loadDataset(const string &filename) {
+vector<string> parseCSVLine(const string &line) {
+    vector<string> result;
+    string current;
+    bool inQuotes = false;
+
+    for (char c : line) {
+        if (c == '"') {
+            inQuotes = !inQuotes;
+        } else if (c == ',' && !inQuotes) {
+            result.push_back(current);
+            current.clear();
+        } else {
+            current += c;
+        }
+    }
+    result.push_back(current);
+    return result;
+}
+
+// ------------------------------------------------------------
+// Load one dataset (single file)
+// ------------------------------------------------------------
+vector<Video> loadSingleDataset(const string &filename) {
     vector<Video> videos;
     ifstream file(filename);
     if (!file.is_open()) {
@@ -50,32 +70,53 @@ vector<Video> loadDataset(const string &filename) {
 
     string line;
     getline(file, line); // skip header
+
     while (getline(file, line)) {
-        stringstream ss(line);
-        string field;
-        vector<string> fields;
+        if (line.empty()) continue;
 
-        while (getline(ss, field, ',')) {
-            fields.push_back(field);
-        }
-
-        if (fields.size() < 9) continue;
+        vector<string> fields = parseCSVLine(line);
+        if (fields.size() < 16) continue; // safety check
 
         string title = fields[2];
         string tagsStr = fields[6];
-        double views = stod(fields[7]);
-        double likes = stod(fields[8]);
-        double ratio = (views == 0) ? 0.0 : likes / views;
+        double views = 0.0, likes = 0.0;
 
+        try {
+            views = stod(fields[7]);
+            likes = stod(fields[8]);
+        } catch (...) {
+            continue; // skip rows with invalid numeric data
+        }
+
+        double ratio = (views == 0.0) ? 0.0 : likes / views;
         vector<string> tags = split(tagsStr, '|');
+
         videos.push_back({title, tags, views, likes, ratio});
     }
+
     file.close();
     return videos;
 }
 
 // ------------------------------------------------------------
-// Heap-based correlation analysis
+// Load and combine all datasets in the "data/" folder
+// ------------------------------------------------------------
+vector<Video> loadAllDatasets(const string &folderPath) {
+    vector<Video> allVideos;
+    for (const auto &entry : fs::directory_iterator(folderPath)) {
+        if (entry.path().extension() == ".csv") {
+            cout << "Loading: " << entry.path().filename().string() << " ...\n";
+            vector<Video> vids = loadSingleDataset(entry.path().string());
+            cout << "  -> Loaded " << vids.size() << " videos.\n";
+            allVideos.insert(allVideos.end(), vids.begin(), vids.end());
+        }
+    }
+    cout << "\nTotal videos loaded from all datasets: " << allVideos.size() << "\n";
+    return allVideos;
+}
+
+// ------------------------------------------------------------
+// Heap-based analysis
 // ------------------------------------------------------------
 void analyzeWithHeap(const vector<Video> &videos, const vector<string> &selectedTags) {
     struct Compare {
@@ -98,13 +139,14 @@ void analyzeWithHeap(const vector<Video> &videos, const vector<string> &selected
 
     cout << "\nTop 10 videos by like/view ratio for selected tags:\n";
     for (int i = 0; i < 10 && !heap.empty(); ++i) {
-        auto top = heap.top(); heap.pop();
+        auto top = heap.top();
+        heap.pop();
         cout << i + 1 << ". " << top.second << " (ratio: " << top.first << ")\n";
     }
 }
 
 // ------------------------------------------------------------
-// Hash table-based correlation analysis
+// Hash Table-based analysis
 // ------------------------------------------------------------
 void analyzeWithHashTable(const vector<Video> &videos, const vector<string> &selectedTags) {
     unordered_map<string, vector<double>> tagRatios;
@@ -134,58 +176,34 @@ void analyzeWithHashTable(const vector<Video> &videos, const vector<string> &sel
 }
 
 // ------------------------------------------------------------
-// Unzip the dataset if needed
-// ------------------------------------------------------------
-bool ensureDatasetExtracted() {
-    fs::path zipPath = "data/archive.zip";
-    fs::path unzipDir = "data/unzipped";
-
-    if (!fs::exists(zipPath)) {
-        cerr << "Error: archive.zip not found in data/ folder.\n";
-        return false;
-    }
-
-    if (!fs::exists(unzipDir)) {
-        cout << "Extracting dataset...\n";
-        fs::create_directories(unzipDir);
-        string command = "unzip -o " + zipPath.string() + " -d " + unzipDir.string();
-        int result = system(command.c_str());
-        if (result != 0) {
-            cerr << "Error: Failed to unzip dataset. Ensure 'unzip' is installed.\n";
-            return false;
-        }
-    }
-
-    return true;
-}
-
-// ------------------------------------------------------------
-// Main menu / wireframe console
+// Main console program
 // ------------------------------------------------------------
 int main() {
     cout << "--------------------------------------------------\n";
     cout << "   YouTube Tag Correlation Analyzer (C++)\n";
     cout << "--------------------------------------------------\n";
 
-    if (!ensureDatasetExtracted()) return 1;
-
-    // Common Kaggle file name (adjust if needed)
-    string datasetFile = "data/unzipped/USvideos.csv";
-    vector<Video> videos = loadDataset(datasetFile);
-    if (videos.empty()) {
-        cerr << "Dataset could not be loaded. Check CSV path.\n";
+    string folder = "data";
+    if (!fs::exists(folder)) {
+        cerr << "Error: 'data/' folder not found.\n";
         return 1;
     }
-    cout << "Loaded " << videos.size() << " videos.\n";
+
+    vector<Video> videos = loadAllDatasets(folder);
+    if (videos.size() < 100000) {
+        cerr << "Warning: Combined dataset has only " << videos.size() << " videos.\n";
+        cerr << "Try adding more CSVs to the data/ folder.\n";
+    }
 
     vector<string> selectedTags;
     bool running = true;
 
     while (running) {
         cout << "\n1. Select tag(s)";
-        cout << "\n2. Choose data structure";
+        cout << "\n2. Choose data structure (Heap / Hash Table)";
         cout << "\n3. Exit";
         cout << "\n> ";
+
         int choice;
         cin >> choice;
         cin.ignore();
