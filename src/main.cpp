@@ -6,9 +6,11 @@
 #include <queue>
 #include <algorithm>
 #include <filesystem>
+#include <chrono>
 
 using namespace std;
 namespace fs = std::filesystem;
+using namespace std::chrono;
 
 // ------------------------------------------------------------
 // Structure to hold video data
@@ -58,7 +60,7 @@ vector<string> parseCSVLine(const string &line) {
 }
 
 // ------------------------------------------------------------
-// Load one dataset (single file)
+// Load one dataset
 // ------------------------------------------------------------
 vector<Video> loadSingleDataset(const string &filename) {
     vector<Video> videos;
@@ -73,9 +75,8 @@ vector<Video> loadSingleDataset(const string &filename) {
 
     while (getline(file, line)) {
         if (line.empty()) continue;
-
         vector<string> fields = parseCSVLine(line);
-        if (fields.size() < 16) continue; // safety check
+        if (fields.size() < 16) continue;
 
         string title = fields[2];
         string tagsStr = fields[6];
@@ -85,7 +86,7 @@ vector<Video> loadSingleDataset(const string &filename) {
             views = stod(fields[7]);
             likes = stod(fields[8]);
         } catch (...) {
-            continue; // skip rows with invalid numeric data
+            continue;
         }
 
         double ratio = (views == 0.0) ? 0.0 : likes / views;
@@ -99,7 +100,7 @@ vector<Video> loadSingleDataset(const string &filename) {
 }
 
 // ------------------------------------------------------------
-// Load and combine all datasets in the "data/" folder
+// Load and combine all datasets
 // ------------------------------------------------------------
 vector<Video> loadAllDatasets(const string &folderPath) {
     vector<Video> allVideos;
@@ -116,14 +117,16 @@ vector<Video> loadAllDatasets(const string &folderPath) {
 }
 
 // ------------------------------------------------------------
-// Heap-based analysis
+// Heap-based analysis (returns runtime)
 // ------------------------------------------------------------
-void analyzeWithHeap(const vector<Video> &videos, const vector<string> &selectedTags) {
+long long analyzeWithHeap(const vector<Video> &videos, const vector<string> &selectedTags, bool showOutput = true) {
     struct Compare {
         bool operator()(const pair<double, string> &a, const pair<double, string> &b) {
             return a.first < b.first;
         }
     };
+
+    auto start = high_resolution_clock::now();
 
     priority_queue<pair<double, string>, vector<pair<double, string>>, Compare> heap;
 
@@ -137,18 +140,28 @@ void analyzeWithHeap(const vector<Video> &videos, const vector<string> &selected
         }
     }
 
-    cout << "\nTop 10 videos by like/view ratio for selected tags:\n";
-    for (int i = 0; i < 10 && !heap.empty(); ++i) {
-        auto top = heap.top();
-        heap.pop();
-        cout << i + 1 << ". " << top.second << " (ratio: " << top.first << ")\n";
+    auto end = high_resolution_clock::now();
+    auto duration = duration_cast<milliseconds>(end - start).count();
+
+    if (showOutput) {
+        cout << "\n[Heap Analysis Completed in " << duration << " ms]\n";
+        cout << "Top 10 videos by like/view ratio:\n";
+        for (int i = 0; i < 10 && !heap.empty(); ++i) {
+            auto top = heap.top();
+            heap.pop();
+            cout << i + 1 << ". " << top.second << " (ratio: " << top.first << ")\n";
+        }
     }
+
+    return duration;
 }
 
 // ------------------------------------------------------------
-// Hash Table-based analysis
+// Hash Table-based analysis (returns runtime)
 // ------------------------------------------------------------
-void analyzeWithHashTable(const vector<Video> &videos, const vector<string> &selectedTags) {
+long long analyzeWithHashTable(const vector<Video> &videos, const vector<string> &selectedTags, bool showOutput = true) {
+    auto start = high_resolution_clock::now();
+
     unordered_map<string, vector<double>> tagRatios;
 
     for (const auto &v : videos) {
@@ -161,22 +174,69 @@ void analyzeWithHashTable(const vector<Video> &videos, const vector<string> &sel
         }
     }
 
-    cout << "\nAverage like/view ratio for each selected tag:\n";
-    for (const auto &selTag : selectedTags) {
-        const auto &ratios = tagRatios[selTag];
-        if (ratios.empty()) {
-            cout << "Tag '" << selTag << "' not found.\n";
-            continue;
-        }
+    unordered_map<string, double> tagAverages;
+    for (const auto &entry : tagRatios) {
         double sum = 0;
-        for (double r : ratios) sum += r;
-        double avg = sum / ratios.size();
-        cout << " - " << selTag << ": " << avg << "\n";
+        for (double r : entry.second) sum += r;
+        tagAverages[entry.first] = (entry.second.empty() ? 0.0 : sum / entry.second.size());
     }
+
+    auto end = high_resolution_clock::now();
+    auto duration = duration_cast<milliseconds>(end - start).count();
+
+    if (showOutput) {
+        cout << "\n[Hash Table Analysis Completed in " << duration << " ms]\n";
+        cout << "Average like/view ratio for selected tags:\n";
+        for (const auto &tag : selectedTags) {
+            if (tagAverages.find(tag) != tagAverages.end())
+                cout << " - " << tag << ": " << tagAverages[tag] << "\n";
+            else
+                cout << " - " << tag << ": (no data)\n";
+        }
+    }
+
+    return duration;
 }
 
 // ------------------------------------------------------------
-// Main console program
+// Run both analyses multiple times and compare average time
+// ------------------------------------------------------------
+void compareDataStructures(const vector<Video> &videos, const vector<string> &selectedTags) {
+    const int runs = 3;
+    long long totalHeap = 0, totalHash = 0;
+
+    cout << "\nRunning both analyses " << runs << " times each to calculate average runtime...\n";
+
+    for (int i = 1; i <= runs; ++i) {
+        cout << "\n--- Run #" << i << " ---\n";
+        long long heapTime = analyzeWithHeap(videos, selectedTags, false);
+        long long hashTime = analyzeWithHashTable(videos, selectedTags, false);
+        cout << "Heap: " << heapTime << " ms | Hash Table: " << hashTime << " ms\n";
+        totalHeap += heapTime;
+        totalHash += hashTime;
+    }
+
+    double avgHeap = totalHeap / static_cast<double>(runs);
+    double avgHash = totalHash / static_cast<double>(runs);
+
+    cout << "\n--------------------------------------------------\n";
+    cout << "Performance Comparison Summary (Average of " << runs << " runs)\n";
+    cout << "--------------------------------------------------\n";
+    cout << "Average Heap Time:       " << avgHeap << " ms\n";
+    cout << "Average Hash Table Time: " << avgHash << " ms\n";
+
+    if (avgHeap < avgHash)
+        cout << "✅ Heap is faster on average.\n";
+    else if (avgHash < avgHeap)
+        cout << "✅ Hash Table is faster on average.\n";
+    else
+        cout << "⚖️ Both performed equally on average.\n";
+
+    cout << "--------------------------------------------------\n";
+}
+
+// ------------------------------------------------------------
+// Main Interactive Console
 // ------------------------------------------------------------
 int main() {
     cout << "--------------------------------------------------\n";
@@ -190,9 +250,11 @@ int main() {
     }
 
     vector<Video> videos = loadAllDatasets(folder);
-    if (videos.size() < 100000) {
-        cerr << "Warning: Combined dataset has only " << videos.size() << " videos.\n";
-        cerr << "Try adding more CSVs to the data/ folder.\n";
+    cout << "Loaded " << videos.size() << " videos total.\n";
+
+    if (videos.empty()) {
+        cerr << "No data loaded. Exiting.\n";
+        return 1;
     }
 
     vector<string> selectedTags;
@@ -200,8 +262,10 @@ int main() {
 
     while (running) {
         cout << "\n1. Select tag(s)";
-        cout << "\n2. Choose data structure (Heap / Hash Table)";
-        cout << "\n3. Exit";
+        cout << "\n2. Run Heap Analysis";
+        cout << "\n3. Run Hash Table Analysis";
+        cout << "\n4. Compare Both (Average Runtime)";
+        cout << "\n5. Exit";
         cout << "\n> ";
 
         int choice;
@@ -218,25 +282,30 @@ int main() {
                 break;
             }
             case 2: {
-                cout << "Choose data structure:\n1. Heap\n2. Hash Table\n> ";
-                int dsChoice;
-                cin >> dsChoice;
-                cin.ignore();
-
                 if (selectedTags.empty()) {
                     cout << "Select tags first.\n";
                     break;
                 }
-
-                if (dsChoice == 1)
-                    analyzeWithHeap(videos, selectedTags);
-                else if (dsChoice == 2)
-                    analyzeWithHashTable(videos, selectedTags);
-                else
-                    cout << "Invalid choice.\n";
+                analyzeWithHeap(videos, selectedTags);
                 break;
             }
-            case 3:
+            case 3: {
+                if (selectedTags.empty()) {
+                    cout << "Select tags first.\n";
+                    break;
+                }
+                analyzeWithHashTable(videos, selectedTags);
+                break;
+            }
+            case 4: {
+                if (selectedTags.empty()) {
+                    cout << "Select tags first.\n";
+                    break;
+                }
+                compareDataStructures(videos, selectedTags);
+                break;
+            }
+            case 5:
                 running = false;
                 break;
             default:
@@ -244,6 +313,7 @@ int main() {
         }
     }
 
-    cout << "Exiting... Goodbye!\n";
+    cout << "\nExiting... Goodbye!\n";
     return 0;
 }
+
